@@ -1,7 +1,6 @@
 from enum import Enum
 from sys import argv
 from io import StringIO
-import re
 
 count = 0
 registers = [0 for _ in range(7)]
@@ -377,6 +376,9 @@ class Parser:
         else:
             self.row = row
             self.col = col
+        self.token_pos = 0
+    def is_empty(self) -> bool:
+        return self.program == [[]] or self.program == []
     def line_num(self):
         return self.row + 1
     def col_pos(self):
@@ -397,11 +399,17 @@ class Parser:
         if self.col >= len(self.program[self.row]):
             self.col = 0
             self.row += 1
+        self.token_pos = 0
+        return res
+    def next_chr(self) -> chr:
+        res = self.program[self.row][self.col][self.token_pos]
+        if self.token_pos < len(self.program[self.row][self.col]):
+            self.token_pos += 1
         return res
     def current(self) -> str:
         return self.program[self.row][self.col]
     def current_line(self) -> str:
-        return "".join(self.program[self.row])
+        return " ".join(self.program[self.row])
     def next_end(self) -> str:
         res = StringIO()
 
@@ -445,131 +453,6 @@ class Parser:
 
         print("Error: string is not closed.")
         exit(1)
-    def parse_while(self, stmnt) -> WhileNode:
-        cond = get_string_between(stmnt, "while", "do")
-        body = get_string_between(stmnt, "do", "end")
-
-        print(f"While cond: {cond}")
-        print(f"While body: {body}")
-
-        cond_tokens = Parser(cond).parse()
-        body_tokens = Parser(body).parse()
-        return WhileNode(0, 0, cond_tokens, body_tokens)
-    def parse_if(self, stmnt):
-        pass
-    def parse_proc(self, defn):
-        pass
-    def parse_const(self, stmnt):
-        match = re.match(r"const (P?<sym>[a-zA-Z0-9\-]+) (P?<body>\s+) end", stmnt)
-        if match:
-            return ConstNode(self.line_num(), self.col_pos(), match.group("sym"), Parser(match.group("body")).parse())
-    def parse_memory(self, stmnt):
-        pass
-    def parse_peek(self, stmnt):
-        pass
-    def parse_let(self, stmnt):
-        pass
-    def parse(self) -> list[Node]:
-
-        print(f"parsing {self.program}")
-
-        if not self.has_next():
-            return []
-
-        result = []
-
-        while self.has_next():
-            syntax = self.next()
-
-            if is_number(syntax):
-                result.append(IntNode(self.line_num(), self.col_pos(), int(syntax)))
-                continue
-
-            op = match_op(syntax)
-            if op is not Intrinsic.NotIntrinsic:
-                result.append(OpNode(self.line_num(), self.col_pos(), op))
-                continue
-
-            if syntax.startswith("\""):
-                string = syntax + " " + self.next_quote()
-                if is_cstr(string):
-                    result.append(CStrNode(0, 0, string))
-                else:
-                    result.append(StrNode(0, 0, string))
-
-            match syntax:
-
-                case "//":
-                    self.next_line()
-
-                case "while":
-                    while_stmnt = "while" + self.next_end()
-                    result.append(self.parse_while(while_stmnt))
-
-                case "proc":
-                    proc_stmnt = "proc" + self.next_end()
-                    result.append(self.parse_proc(proc_stmnt))
-
-                case "const":
-                    binding = self.next_end()
-                    result.append(self.parse_const(binding))
-
-                case "if":
-                    if_stmnt = self.next_end()
-
-                case _:
-                    pass
-
-        return result
-
-def to_bytes(num, sizebits):
-    shifts = sizebits//8
-    bytes = []
-    for i in range(shifts):
-        bytes.append((num >> i*8) & 0xFF)
-    return bytes
-
-def string_to_bytes(string) -> list[int]:
-    return [ord(char) for char in string]
-
-def from_bytes(bytes):
-    num = 0
-    bytes.reverse()
-    for byte in bytes:
-        num = (num << 8) | byte
-    return num
-
-class Memory:
-    def __init__(self) -> None:
-        self.mem = []
-    def alloc(self, size: int) -> int:
-        ptr = len(self.mem)
-        for _ in range(size):
-            self.mem.append(0)
-        return ptr
-    def grab(self, numbytes, addr) -> list[int]:
-        res = []
-        for i in range(numbytes):
-            res.append(self.mem[addr+i])
-        return res
-    def storebyte(self, addr, byte):
-        self.mem[addr] = byte
-    def storen(self, numbits, addr, item):
-        bytes = to_bytes(item, numbits)
-        for offset, byte in enumerate(bytes):
-            try:
-                self.mem[addr + offset] = byte
-            except IndexError:
-                print("Error: Segmentation Fault")
-                exit(1)
-    def loadbyte(self, addr):
-        return self.mem[addr]
-    def loadn(self, numbits, addr):
-        return from_bytes(self.grab(numbits//8, addr))
-    def store_str(self, string, ptr):
-        bytes = string_to_bytes(parse_string(string))
-        for idx, byte in enumerate(bytes):
-            self.mem[ptr+idx] = byte
 
 def is_number(syntax: str) -> bool:
     try:
@@ -630,6 +513,87 @@ def parse_string(string: str, is_cstr=False) -> str:
                 res.write(char)
 
     return res.getvalue()
+
+   
+
+def parse(parser: Parser) -> list[Node]:
+    if parser.is_empty():
+        return []
+    
+    tokens = []
+
+    while parser.has_next():
+        syntax = parser.next()
+
+        if syntax.startswith("//"):
+            parser.next_line()
+            continue
+
+        if is_number(syntax):
+            tokens.append(IntNode(parser.line_num(), parser.col_pos(), int(syntax)))
+            continue
+
+        op = match_op(syntax)
+        if op != Intrinsic.NotIntrinsic:
+            tokens.append(OpNode(parser.line_num(), parser.col_pos(), op))
+            continue
+
+        if syntax.startswith("\""):
+            string = syntax + " " + parser.next_quote()
+            #print(string)
+            if is_string(string):
+                tokens.append(StrNode(parser.line_num(), parser.col_pos(), parse_string(string)))
+
+    return tokens
+
+def to_bytes(num, sizebits):
+    shifts = sizebits//8
+    bytes = []
+    for i in range(shifts):
+        bytes.append((num >> i*8) & 0xFF)
+    return bytes
+
+def string_to_bytes(string) -> list[int]:
+    return [ord(char) for char in string]
+
+def from_bytes(bytes):
+    num = 0
+    bytes.reverse()
+    for byte in bytes:
+        num = (num << 8) | byte
+    return num
+
+class Memory:
+    def __init__(self) -> None:
+        self.mem = []
+    def alloc(self, size: int) -> int:
+        ptr = len(self.mem)
+        for _ in range(size):
+            self.mem.append(0)
+        return ptr
+    def grab(self, numbytes, addr) -> list[int]:
+        res = []
+        for i in range(numbytes):
+            res.append(self.mem[addr+i])
+        return res
+    def storebyte(self, addr, byte):
+        self.mem[addr] = byte
+    def storen(self, numbits, addr, item):
+        bytes = to_bytes(item, numbits)
+        for offset, byte in enumerate(bytes):
+            try:
+                self.mem[addr + offset] = byte
+            except IndexError:
+                print("Error: Segmentation Fault")
+                exit(1)
+    def loadbyte(self, addr):
+        return self.mem[addr]
+    def loadn(self, numbits, addr):
+        return from_bytes(self.grab(numbits//8, addr))
+    def store_str(self, string, ptr):
+        bytes = string_to_bytes(parse_string(string))
+        for idx, byte in enumerate(bytes):
+            self.mem[ptr+idx] = byte
 
 def get_innermost(string, value) -> int:
     return 0
@@ -780,7 +744,10 @@ def do_op(op: Intrinsic, env: Env, mem: Memory):
             env.push(1 if rhs[0] != lhs[0] else 0, TokenType.Bool)
         case Intrinsic.Print:
             print(env.pop()[0])
-            return
+        case Intrinsic.Drop:
+            env.drop()
+        case Intrinsic.Swap:
+            env.swap()
         case _:
             print(f"{op} is not implemented.")
 
@@ -794,6 +761,11 @@ def interpret(abstract: list[Node], env: Env, mem: Memory):
 
         if token.type == TokenType.Str:
             ptr = mem.alloc(len(token.value))
+            mem.store_str(token.value, ptr)
+            env.push(len(token.value), TokenType.Int)
+            env.push(ptr, TokenType.Ptr)
+            continue
+            #print(mem.mem)
 
         if token.type == TokenType.Operation:
             do_op(token.value, env, mem)
@@ -807,9 +779,8 @@ def main():
     with open(argv[1], "r") as file:
         syntax = file.read()
     parser = Parser(syntax)
-    parser.parse()
-    #abstract = parse(syntax)
-   # interpret(abstract, Env(), Memory())
+    tokens = parse(parser)
+    interpret(tokens, Env(), Memory())
 
 if __name__ == '__main__':
     main()
